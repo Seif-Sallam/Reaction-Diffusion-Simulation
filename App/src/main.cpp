@@ -2,14 +2,18 @@
 #include <SFML/Graphics.hpp>
 #include <string>
 #include <vector>
+#include <thread>
+#include <mutex>
+
+#include <fmt/core.h>
+
+#define LOCK_GUARD(X) const std::lock_guard<std::mutex> lk_##X(X);
 
 sf::Image mainImage;
 sf::Image nextImage;
 
-bool imageReady = false;
-
-int WIDTH{200};
-int HEIGHT{200};
+int WIDTH{1920};
+int HEIGHT{1080};
 
 double dA = 1.0f;
 double dB = 0.5f;
@@ -68,9 +72,85 @@ double laplaceB(int x, int y)
     return sum;
 }
 
+std::mutex mtx;
+std::vector<bool> threadFinished;
+
+bool isWorking = true;
+
+inline void
+doWork(int idx, int startX, int startY, int endX, int endY)
+{
+    if (startX == 0)
+        startX += 1;
+    if (endX == WIDTH)
+        endX = WIDTH - 1;
+
+    if (startY == 0)
+        startY += 1;
+    if (endY == HEIGHT)
+        endY = HEIGHT - 1;
+
+    while (true)
+    {
+        {
+            LOCK_GUARD(mtx);
+            if (!isWorking)
+                break;
+
+            if (threadFinished[idx])
+                continue;
+            threadFinished[idx] = false;
+        }
+
+        // Processing
+        for (int i = startX; i < endX; i++)
+        {
+            for (int j = startY; j < endY; j++)
+            {
+                double& a = grid[i][j].a;
+                double& b = grid[i][j].b;
+                next[i][j].a =  a +
+                                ((dA * laplaceA(i, j)) -
+                                (a * b * b) +
+                                (feed * (1 - a)));
+                next[i][j].b =  b +
+                                ((dB * laplaceB(i, j)) +
+                                (a * b * b) -
+                                ((k + feed) * b));
+
+                if (next[i][j].a > 1)
+                    next[i][j].a = 1;
+                if (next[i][j].b > 1)
+                    next[i][j].b = 1;
+
+                if (next[i][j].a < 0)
+                    next[i][j].a = 0;
+                if (next[i][j].b < 0)
+                    next[i][j].b = 0;
+
+                // set the image pixel color
+                double a2 = (double)(next[i][j].a);
+                double b2 = (double)(next[i][j].b);
+
+                int c = (int)floor((a2 - b2) * 255);
+                if (c > 255)
+                    c = 255;
+                else if (c < 0)
+                    c = 0;
+
+                setPixel(i, j, c, c, c, 255);
+            }
+        }
+
+        {
+            LOCK_GUARD(mtx);
+            threadFinished[idx] = true;
+        }
+    }
+}
+
 int main(int argc, const char* argv[])
 {
-
     if (argc > 2){
         WIDTH = std::stoi(argv[1]);
         HEIGHT = std::stoi(argv[2]);
@@ -79,7 +159,6 @@ int main(int argc, const char* argv[])
     settings.antialiasingLevel = 8;
 
     sf::RenderWindow window(sf::VideoMode(WIDTH, HEIGHT), "App", sf::Style::Default, settings);
-    // window.setFramerateLimit(20);
 
     mainImage.create(WIDTH, HEIGHT);
     nextImage.create(WIDTH, HEIGHT);
@@ -117,9 +196,40 @@ int main(int argc, const char* argv[])
 
     sf::Clock clk;
 
-    bool paused = false;
-    int timeStep = 10;
     float d = 1000;
+
+    auto numOfCores = std::thread::hardware_concurrency();
+    std::vector<std::thread> allThreads;
+
+    int rowCount = int(sqrt(numOfCores));
+    int colCount = int(numOfCores / rowCount);
+
+    int blockSizeX = WIDTH / rowCount;
+    int blockSizeY = HEIGHT / colCount;
+
+    fmt::print("Num of cores: {}\n", numOfCores);
+    fmt::print("Row Count: {}, Col Count: {}\n", rowCount, colCount);
+    fmt::print("X size: {}, Y Size: {}\n", blockSizeX, blockSizeY);
+
+    for (int i = 0; i < rowCount; ++i)
+    {
+        for (int j = 0; j < colCount; ++j)
+        {
+            int startX{}, startY{}, endX{}, endY{};
+            startX = blockSizeX * i;
+            endX = startX + blockSizeX;
+            startY = blockSizeY * j;
+            endY = startY + blockSizeY;
+            int idx = i * colCount + j;
+            fmt::print("idx: ({})\n\t- X: ({}, {}), Y: ({}, {})\n", idx, startX, endX, startY, endY);
+            threadFinished.push_back(true);
+            allThreads.push_back(std::thread(doWork, idx, startX, startY, endX, endY));
+        }
+    }
+
+    int maxUpdates = 1;
+    int times = 0;
+
     while (window.isOpen())
     {
         auto dt = clk.restart();
@@ -128,80 +238,48 @@ int main(int argc, const char* argv[])
         {
             switch(event.type)
             {
-                case sf::Event::KeyPressed:
-                if (event.key.code == sf::Keyboard::Key::P)
-                    paused = !paused;
-                break;
                 case sf::Event::Closed:
+                    isWorking = false;
                     window.close();
                 break;
             }
         }
-        if (!paused)
+
         {
-            // copy image when ready
-            if (imageReady)
+            bool done = true;
+            LOCK_GUARD(mtx);
+
+            for (size_t i = 0; i < threadFinished.size(); ++i)
             {
-                imageReady = false;
-                mainImage.copy(nextImage, 0 ,0);
+                auto& finished = threadFinished[i];
+                done = done & finished;
             }
 
-            for (int x = 0; x < timeStep; ++x) {
-                for (int i = 1; i< WIDTH - 1; i++)
-                {
-                    for (int j = 1; j < HEIGHT - 1; j++)
-                    {
-                        double& a = grid[i][j].a;
-                        double& b = grid[i][j].b;
-                        next[i][j].a =  a +
-                                        ((dA * laplaceA(i, j)) -
-                                        (a * b * b) +
-                                        (feed * (1 - a)));
-                        next[i][j].b =  b +
-                                        ((dB * laplaceB(i, j)) +
-                                        (a * b * b) -
-                                        ((k + feed) * b));
+            if (done)
+            {
+                for (auto& finished : threadFinished)
+                    finished = false;
 
-                        if (next[i][j].a > 1)
-                            next[i][j].a = 1;
-                        if (next[i][j].b > 1)
-                            next[i][j].b = 1;
-
-                        if (next[i][j].a < 0)
-                            next[i][j].a = 0;
-                        if (next[i][j].b < 0)
-                            next[i][j].b = 0;
-                    }
-                }
                 grid.swap(next);
+
+                times += 1;
+                times = times % (maxUpdates + 1);
             }
 
-
-            for (int i = 0; i< WIDTH; i++)
+            if (done && times == maxUpdates)
             {
-                for (int j = 0; j < HEIGHT; j++)
-                {
-                    double a = (double)(grid[i][j].a);
-                    double b = (double)(grid[i][j].b);
-
-                    int c = (int)floor((a - b) * 255);
-                    if (c > 255)
-                        c = 255;
-                    else if (c < 0)
-                        c = 0;
-
-                    setPixel(i, j, c, c, c, 255);
-                }
+                mainImage.copy(nextImage, 0 ,0);
+                fullTexture.update(nextImage);
+                fmt::print("\r time: {:.10f} ms", dt.asSeconds() * 1000.0f);
             }
-            imageReady = true;
-
-            fullTexture.update(nextImage);
         }
-
 
         window.clear();
         window.draw(rect);
         window.display();
     }
+
+    for (auto& thread : allThreads)
+        thread.join();
     return 0;
 }
