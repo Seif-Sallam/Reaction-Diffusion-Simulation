@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 
-add_executable(App
+add_executable(Diffusion
     src/main.cpp
 )
 
-target_link_libraries(App
+target_link_libraries(Diffusion
 	PUBLIC
 	opengl32
 	sfml-graphics
@@ -14,7 +14,7 @@ target_link_libraries(App
 	Utils
 )
 
-target_include_directories(App
+target_include_directories(Diffusion
 	PRIVATE
 	./include/
 	../Utils/include/

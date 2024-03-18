@@ -20,7 +20,7 @@ CPMAddPackage(
 include_directories(AFTER ${tinyxml2_SOURCE_DIR})
 
 project(
-	App
+	Reaction-Diffusion-Sim
 	VERSION
 	0.1
 	LANGUAGES
@@ -38,4 +38,4 @@ include_directories(AFTER Thirdparty/fmt/include)
 add_subdirectory(Thirdparty/imgui)
 include_directories(AFTER Thirdparty/imgui)
 add_subdirectory(Utils)
-add_subdirectory(App)
+add_subdirectory(Diffusion)
