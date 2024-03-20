@@ -12,13 +12,13 @@
 sf::Image mainImage;
 sf::Image nextImage;
 
-int WIDTH{1920};
-int HEIGHT{1080};
+int WIDTH{};
+int HEIGHT{};
 
 double dA = 1.0f;
 double dB = 0.5f;
 double feed = 0.055f;
-double k = 0.062f;
+double kill = 0.062f;
 
 void
 setPixel(const int& x, const int& y, const sf::Uint8& r, const sf::Uint8& g, const sf::Uint8& b, const sf::Uint8& a = 255) {
@@ -116,7 +116,7 @@ doWork(int idx, int startX, int startY, int endX, int endY)
                 next[i][j].b =  b +
                                 ((dB * laplaceB(i, j)) +
                                 (a * b * b) -
-                                ((k + feed) * b));
+                                ((kill + feed) * b));
 
                 if (next[i][j].a > 1)
                     next[i][j].a = 1;
@@ -149,12 +149,84 @@ doWork(int idx, int startX, int startY, int endX, int endY)
     }
 }
 
+#define ARG_OPTION_DEF(X, VAL, D) fmt::print("\t- {}: {}, Default: {}\n", X, VAL, D)
+
+void
+helpMessage()
+{
+    fmt::print("Usage:\n");
+    fmt::print("Diffusion.exe [*Options*]\n");
+    fmt::print("* Options:\n");
+    ARG_OPTION_DEF("width", "Number", 200);
+    ARG_OPTION_DEF("height", "Number", 200);
+    ARG_OPTION_DEF("popX", "Number", "Width / 2");
+    ARG_OPTION_DEF("popY", "Number", "Height / 2");
+    ARG_OPTION_DEF("length", "Number", 25);
+    ARG_OPTION_DEF("cores", "Number", "Maximum number of cores in your CPU");
+    ARG_OPTION_DEF("debug", "0/1", 0);
+    ARG_OPTION_DEF("dA", "Decimal", 1.0f);
+    ARG_OPTION_DEF("dB", "Decimal", 0.5f);
+    ARG_OPTION_DEF("feed", "Decimal", 0.055f);
+    ARG_OPTION_DEF("kill", "Decimal", 0.062f);
+}
+
+bool
+stepAndAssert(int& i, const int& steps, const int& argc)
+{
+    i += steps;
+    if (argc <= i) {
+        helpMessage();
+        return false;
+    }
+    return true;
+}
+#define CHECK_ARGV(RES, I) if (std::string(argv[I]) == std::string("--") + #RES) {\
+    if (!stepAndAssert(I, 1, argc))\
+        return 1;\
+    RES = std::stoi(argv[I]);\
+}
+
+#define CHECK_ARGV_D(RES, I) if (std::string(argv[I]) == std::string("--") + #RES) {\
+    if (!stepAndAssert(I, 1, argc))\
+        return 1;\
+    RES = std::stod(argv[I]);\
+}
+
 int main(int argc, const char* argv[])
 {
-    if (argc > 2){
-        WIDTH = std::stoi(argv[1]);
-        HEIGHT = std::stoi(argv[2]);
+    int width{200};
+    int height{200};
+    int popX{width / 2}, popY{height / 2}, length{25};
+    bool debug = false;
+    int cores = std::thread::hardware_concurrency();
+    for (auto i = 1; i < argc; ++i)
+    {
+        CHECK_ARGV(width, i)
+        else CHECK_ARGV(height, i)
+        else CHECK_ARGV(popX, i)
+        else CHECK_ARGV(popY, i)
+        else CHECK_ARGV(length, i)
+        else CHECK_ARGV(cores, i)
+        else CHECK_ARGV(debug, i)
+        else CHECK_ARGV_D(dA, i)
+        else CHECK_ARGV_D(dB, i)
+        else CHECK_ARGV_D(feed, i)
+        else CHECK_ARGV_D(kill, i)
+        else if (std::string(argv[i]) == "--help") {
+            helpMessage();
+            return 0;
+        }
+
     }
+    WIDTH = width;
+    HEIGHT = height;
+
+    if (popY > HEIGHT || popX > WIDTH || popX < 0 || popY < 0)
+    {
+        fmt::print("Invalid parameters");
+        return 1;
+    }
+
     sf::ContextSettings settings;
     settings.antialiasingLevel = 8;
 
@@ -182,8 +254,8 @@ int main(int argc, const char* argv[])
         }
     }
 
-    for (int i = WIDTH/2 - 25; i < WIDTH/2 + 25; ++i) {
-        for (int j = HEIGHT/2 - 25; j < HEIGHT/2 + 25; ++j) {
+    for (int i = popX - length; i < popX + length; ++i) {
+        for (int j = popY - length; j < popY + length; ++j) {
             grid[i][j].a = 0;
             grid[i][j].b = 1;
             next[i][j].a = grid[i][j].a;
@@ -198,16 +270,17 @@ int main(int argc, const char* argv[])
 
     float d = 1000;
 
-    auto numOfCores = std::thread::hardware_concurrency();
     std::vector<std::thread> allThreads;
 
-    int rowCount = int(sqrt(numOfCores));
-    int colCount = int(numOfCores / rowCount);
+    int rowCount = int(sqrt(cores));
+    int colCount = int(cores / rowCount);
 
     int blockSizeX = WIDTH / rowCount;
     int blockSizeY = HEIGHT / colCount;
 
-    fmt::print("Num of cores: {}\n", numOfCores);
+    fmt::print("Num of cores: {}\n", cores);
+    fmt::print("Width: {}, Height: {}\n", WIDTH, HEIGHT);
+    fmt::print("PopX: {}, PopY: {}, Length\n", popX, popY, length);
     fmt::print("Row Count: {}, Col Count: {}\n", rowCount, colCount);
     fmt::print("X size: {}, Y Size: {}\n", blockSizeX, blockSizeY);
 
@@ -221,7 +294,8 @@ int main(int argc, const char* argv[])
             startY = blockSizeY * j;
             endY = startY + blockSizeY;
             int idx = i * colCount + j;
-            fmt::print("idx: ({})\n\t- X: ({}, {}), Y: ({}, {})\n", idx, startX, endX, startY, endY);
+            if (debug)
+                fmt::print("idx: ({})\n\t- X: ({}, {}), Y: ({}, {})\n", idx, startX, endX, startY, endY);
             threadFinished.push_back(true);
             allThreads.push_back(std::thread(doWork, idx, startX, startY, endX, endY));
         }
@@ -270,7 +344,8 @@ int main(int argc, const char* argv[])
             {
                 mainImage.copy(nextImage, 0 ,0);
                 fullTexture.update(nextImage);
-                fmt::print("\r time: {:.10f} ms", dt.asSeconds() * 1000.0f);
+                if (debug)
+                    fmt::print("\rtime: {:.10f} ms", dt.asSeconds() * 1000.0f);
             }
         }
 
